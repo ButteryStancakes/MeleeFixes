@@ -148,10 +148,18 @@ namespace MeleeFixes
     {
         internal static void FilterTargets(ref List<RaycastHit> hits)
         {
+            HashSet<IHittable> uniqueTargets = [];
             for (int i = 0; i < hits.Count; i++)
             {
                 if (hits[i].transform.TryGetComponent(out IHittable hittable))
                 {
+                    if (!uniqueTargets.Add(hittable))
+                    {
+                        hits.RemoveAt(i--);
+                        //Plugin.Logger.LogDebug($"Filtered duplicate shovel hit on \"{hits[i].transform.name}\"");
+                        continue;
+                    }
+
                     EnemyAICollisionDetect enemyAICollisionDetect = hittable as EnemyAICollisionDetect;
                     // this prevents the shovel from bouncing off thumper/spider/etc. hurtboxes, since that wouldn't actually deal damage
                     if (enemyAICollisionDetect != null && enemyAICollisionDetect.onlyCollideWhenGrounded)
