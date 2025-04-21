@@ -7,18 +7,28 @@ using System.Reflection.Emit;
 using BepInEx.Logging;
 using UnityEngine;
 using GameNetcodeStuff;
+using BepInEx.Bootstrap;
 
 namespace MeleeFixes
 {
     [BepInPlugin(PLUGIN_GUID, PLUGIN_NAME, PLUGIN_VERSION)]
+    [BepInDependency(GUID_LOBBY_COMPATIBILITY, BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        const string PLUGIN_GUID = "butterystancakes.lethalcompany.meleefixes", PLUGIN_NAME = "Melee Fixes", PLUGIN_VERSION = "1.4.0";
+        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.meleefixes", PLUGIN_NAME = "Melee Fixes", PLUGIN_VERSION = "1.4.1";
         internal static new ManualLogSource Logger;
+
+        const string GUID_LOBBY_COMPATIBILITY = "BMX.LobbyCompatibility";
 
         void Awake()
         {
             Logger = base.Logger;
+
+            if (Chainloader.PluginInfos.ContainsKey(GUID_LOBBY_COMPATIBILITY))
+            {
+                Logger.LogInfo("CROSS-COMPATIBILITY - Lobby Compatibility detected");
+                LobbyCompatibility.Init();
+            }
 
             new Harmony(PLUGIN_GUID).PatchAll();
 
