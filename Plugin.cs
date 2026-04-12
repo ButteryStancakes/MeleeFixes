@@ -15,7 +15,7 @@ namespace MeleeFixes
     [BepInDependency(GUID_LOBBY_COMPATIBILITY, BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.meleefixes", PLUGIN_NAME = "Melee Fixes", PLUGIN_VERSION = "1.4.1";
+        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.meleefixes", PLUGIN_NAME = "Melee Fixes", PLUGIN_VERSION = "1.5.0";
         internal static new ManualLogSource Logger;
 
         const string GUID_LOBBY_COMPATIBILITY = "BMX.LobbyCompatibility";
@@ -37,16 +37,11 @@ namespace MeleeFixes
     }
 
     [HarmonyPatch]
-    class MeleeFixesPatches
+    static class MeleeFixesPatches
     {
-        static readonly MethodInfo GAME_OBJECT_LAYER = AccessTools.DeclaredPropertyGetter(typeof(GameObject), nameof(GameObject.layer));
-        static readonly MethodInfo RAYCAST_HIT_TRANSFORM = AccessTools.DeclaredPropertyGetter(typeof(RaycastHit), nameof(RaycastHit.transform));
-        static readonly MethodInfo RAYCAST_HIT_COLLIDER = AccessTools.DeclaredPropertyGetter(typeof(RaycastHit), nameof(RaycastHit.collider));
-        static readonly MethodInfo COLLIDER_IS_TRIGGER = AccessTools.DeclaredPropertyGetter(typeof(Collider), nameof(Collider.isTrigger));
-
-        static readonly FieldInfo OBJECTS_HIT_BY_SHOVEL_LIST = AccessTools.Field(typeof(Shovel), "objectsHitByShovelList");
-        static readonly FieldInfo OBJECTS_HIT_BY_KNIFE_LIST = AccessTools.Field(typeof(KnifeItem), "objectsHitByKnifeList");
-        static readonly FieldInfo ENEMY_COLLIDERS = AccessTools.Field(typeof(ShotgunItem), "enemyColliders");
+        static readonly FieldInfo OBJECTS_HIT_BY_SHOVEL_LIST = AccessTools.Field(typeof(Shovel), nameof(Shovel.objectsHitByShovelList));
+        static readonly FieldInfo OBJECTS_HIT_BY_KNIFE_LIST = AccessTools.Field(typeof(KnifeItem), nameof(KnifeItem.objectsHitByKnifeList));
+        static readonly FieldInfo ENEMY_COLLIDERS = AccessTools.Field(typeof(ShotgunItem), nameof(ShotgunItem.enemyColliders));
 
         static readonly MethodInfo FIND_OBJECT_OF_TYPE_ROUND_MANAGER = AccessTools.Method(typeof(Object), nameof(Object.FindObjectOfType), null, [typeof(RoundManager)]);
         static readonly MethodInfo ROUND_MANAGER_INSTANCE = AccessTools.DeclaredPropertyGetter(typeof(RoundManager), nameof(RoundManager.Instance));
@@ -57,16 +52,13 @@ namespace MeleeFixes
         [HarmonyPatch(typeof(Shovel), nameof(Shovel.HitShovel)), HarmonyPriority(Priority.First)]
         [HarmonyPatch(typeof(KnifeItem), nameof(KnifeItem.HitKnife))]
         [HarmonyTranspiler]
-        static IEnumerable<CodeInstruction> TransHit(IEnumerable<CodeInstruction> instructions)
+        static IEnumerable<CodeInstruction> Trans_Hit(IEnumerable<CodeInstruction> instructions)
         {
             List<CodeInstruction> codes = instructions.ToList();
 
-            bool triggerCheck = true; // will be set to false if patching the knife
             bool filterFunc = false;
-            for (int i = 0; i < codes.Count; i++)
+            for (int i = 0; i < codes.Count - 1; i++)
             {
-                //Plugin.Logger.LogDebug(codes[i]);
-
                 if (!filterFunc && codes[i].opcode == OpCodes.Stfld)
                 {
                     FieldInfo fieldInfo = (FieldInfo)codes[i].operand;
@@ -79,59 +71,6 @@ namespace MeleeFixes
                         ]);
                         Plugin.Logger.LogDebug("Transpiler: Filter targets by validity");
                         filterFunc = true;
-
-                        // trigger check is only necessary for the knife
-                        if (fieldInfo == OBJECTS_HIT_BY_KNIFE_LIST)
-                            triggerCheck = false;
-                    }
-                }
-                // gameObject.layer == 11
-                else if (!triggerCheck && codes[i].opcode == OpCodes.Callvirt && (MethodInfo)codes[i].operand == GAME_OBJECT_LAYER && codes[i + 1].opcode == OpCodes.Ldc_I4_S && (sbyte)codes[i + 1].operand == 11)
-                {
-                    for (int j = i - 1; j >= 0; j--)
-                    {
-                        if (codes[j].opcode == OpCodes.Ldarg_0)
-                        {
-                            List<CodeInstruction> clone = [];
-                            // clone all opcodes up to RaycastHit.transform
-                            for (int k = j; codes[k].opcode != OpCodes.Call || (MethodInfo)codes[k].operand != RAYCAST_HIT_TRANSFORM; k++)
-                                clone.Add(new CodeInstruction(codes[k].opcode, codes[k].operand));
-                            clone.AddRange([
-                                // RaycastHit.collider
-                                new CodeInstruction(OpCodes.Call, RAYCAST_HIT_COLLIDER),
-                                // Collider.isTrigger
-                                new CodeInstruction(OpCodes.Callvirt, COLLIDER_IS_TRIGGER),
-                                // == false
-                                new CodeInstruction(OpCodes.Brtrue, codes[i + 2].operand)
-                            ]);
-
-                            for (int k = j - 1; k >= 0; k--)
-                            {
-                                // need to move label so short-circuit evaluation doesn't skip the trigger check
-                                if (codes[k].opcode == OpCodes.Ldc_I4_8)
-                                {
-                                    Label label = (Label)codes[k + 1].operand;
-                                    for (int l = i; l < codes.Count; l++)
-                                    {
-                                        if (codes[l].labels.Contains(label))
-                                        {
-                                            codes[l].labels.Remove(label);
-                                            clone[0].labels.Add(label);
-                                            codes.InsertRange(i + 3, clone);
-                                            Plugin.Logger.LogDebug("Transpiler (Knife): Add isTrigger check after layer checks");
-                                            triggerCheck = true;
-                                            break;
-                                        }
-                                    }
-                                }
-
-                                if (triggerCheck)
-                                    break;
-                            }
-                        }
-
-                        if (triggerCheck)
-                            break;
                     }
                 }
                 else if (codes[i].opcode == OpCodes.Call && (MethodInfo)codes[i].operand == FIND_OBJECT_OF_TYPE_ROUND_MANAGER)
@@ -146,7 +85,7 @@ namespace MeleeFixes
 
         [HarmonyPatch(typeof(Shovel), nameof(Shovel.ItemActivate))]
         [HarmonyPrefix]
-        static void ShovelPreItemActivate(Shovel __instance, PlayerControllerB ___previousPlayerHeldBy, ref bool ___reelingUp)
+        static void Shovel_Pre_ItemActivate(Shovel __instance, PlayerControllerB ___previousPlayerHeldBy, ref bool ___reelingUp)
         {
             if (___reelingUp && ___previousPlayerHeldBy != __instance.playerHeldBy)
             {
@@ -157,7 +96,7 @@ namespace MeleeFixes
 
         [HarmonyPatch(typeof(ShotgunItem), nameof(ShotgunItem.ShootGun))]
         [HarmonyTranspiler]
-        static IEnumerable<CodeInstruction> ShotgunItemTransShootGun(IEnumerable<CodeInstruction> instructions, ILGenerator generator)
+        static IEnumerable<CodeInstruction> ShotgunItem_Trans_ShootGun(IEnumerable<CodeInstruction> instructions, ILGenerator generator)
         {
             List<CodeInstruction> codes = instructions.ToList();
 
@@ -167,9 +106,9 @@ namespace MeleeFixes
                 // first distance check for tinnitus/screenshake
                 if (!fixEarsRinging && codes[i].opcode == OpCodes.Bge_Un && codes[i - 2].opcode == OpCodes.Ldloc_2)
                 {
+                    int insertAt = -1;
                     for (int j = i + 1; j < codes.Count - 1; j++)
                     {
-                        int insertAt = -1;
                         if (codes[j + 1].opcode == OpCodes.Ldloc_2)
                         {
                             // first jump from if/else branches
@@ -227,7 +166,7 @@ namespace MeleeFixes
 
                     EnemyAICollisionDetect enemyAICollisionDetect = hittable as EnemyAICollisionDetect;
                     // this prevents the shovel from bouncing off thumper/spider/etc. hurtboxes, since that wouldn't actually deal damage
-                    if (enemyAICollisionDetect != null && enemyAICollisionDetect.onlyCollideWhenGrounded)
+                    if (enemyAICollisionDetect != null && enemyAICollisionDetect.onlyCollideWhenGrounded && !enemyAICollisionDetect.alwaysAllowHitting)
                     {
                         hits.RemoveAt(i--);
                         //Plugin.Logger.LogDebug($"Filtered invalid melee target on \"{hits[i].transform.name}\"");
@@ -248,7 +187,7 @@ namespace MeleeFixes
             // remove all duplicates
             for (int i = 0; i < num; i++)
             {
-                if (sortedResults[i].transform.TryGetComponent(out EnemyAICollisionDetect enemyCollider) && !enemyCollider.onlyCollideWhenGrounded)
+                if (sortedResults[i].transform.TryGetComponent(out EnemyAICollisionDetect enemyCollider) && (!enemyCollider.onlyCollideWhenGrounded || enemyCollider.alwaysAllowHitting))
                 {
                     EnemyAI enemy = enemyCollider.mainScript;
                     if (enemies.Add(enemy))
