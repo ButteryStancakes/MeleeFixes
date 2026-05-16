@@ -15,7 +15,7 @@ namespace MeleeFixes
     [BepInDependency(GUID_LOBBY_COMPATIBILITY, BepInDependency.DependencyFlags.SoftDependency)]
     public class Plugin : BaseUnityPlugin
     {
-        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.meleefixes", PLUGIN_NAME = "Melee Fixes", PLUGIN_VERSION = "1.5.0";
+        internal const string PLUGIN_GUID = "butterystancakes.lethalcompany.meleefixes", PLUGIN_NAME = "Melee Fixes", PLUGIN_VERSION = "1.5.1";
         internal static new ManualLogSource Logger;
 
         const string GUID_LOBBY_COMPATIBILITY = "BMX.LobbyCompatibility";
@@ -39,6 +39,10 @@ namespace MeleeFixes
     [HarmonyPatch]
     static class MeleeFixesPatches
     {
+        const int TERRAIN = 25;
+
+        static readonly MethodInfo GAME_OBJECT_LAYER = AccessTools.DeclaredPropertyGetter(typeof(GameObject), nameof(GameObject.layer));
+
         static readonly FieldInfo OBJECTS_HIT_BY_SHOVEL_LIST = AccessTools.Field(typeof(Shovel), nameof(Shovel.objectsHitByShovelList));
         static readonly FieldInfo OBJECTS_HIT_BY_KNIFE_LIST = AccessTools.Field(typeof(KnifeItem), nameof(KnifeItem.objectsHitByKnifeList));
         static readonly FieldInfo ENEMY_COLLIDERS = AccessTools.Field(typeof(ShotgunItem), nameof(ShotgunItem.enemyColliders));
@@ -52,12 +56,12 @@ namespace MeleeFixes
         [HarmonyPatch(typeof(Shovel), nameof(Shovel.HitShovel)), HarmonyPriority(Priority.First)]
         [HarmonyPatch(typeof(KnifeItem), nameof(KnifeItem.HitKnife))]
         [HarmonyTranspiler]
-        static IEnumerable<CodeInstruction> Trans_Hit(IEnumerable<CodeInstruction> instructions)
+        static IEnumerable<CodeInstruction> Trans_Hit(IEnumerable<CodeInstruction> instructions, MethodBase __originalMethod)
         {
             List<CodeInstruction> codes = instructions.ToList();
 
             bool filterFunc = false;
-            for (int i = 0; i < codes.Count - 1; i++)
+            for (int i = 8; i < codes.Count - 3; i++)
             {
                 if (!filterFunc && codes[i].opcode == OpCodes.Stfld)
                 {
@@ -69,14 +73,37 @@ namespace MeleeFixes
                             new CodeInstruction(OpCodes.Ldflda, codes[i].operand),
                             new CodeInstruction(OpCodes.Call, MELEE_HELPER_FILTER_TARGETS)
                         ]);
-                        Plugin.Logger.LogDebug("Transpiler: Filter targets by validity");
+                        Plugin.Logger.LogDebug($"Transpiler ({__originalMethod.DeclaringType}.{__originalMethod.Name}): Filter targets by validity");
                         filterFunc = true;
+                        i += 3;
                     }
                 }
-                else if (codes[i].opcode == OpCodes.Call && (MethodInfo)codes[i].operand == FIND_OBJECT_OF_TYPE_ROUND_MANAGER)
+                else if (codes[i].opcode == OpCodes.Call && codes[i].operand as MethodInfo == FIND_OBJECT_OF_TYPE_ROUND_MANAGER)
                 {
                     codes[i].operand = ROUND_MANAGER_INSTANCE;
-                    Plugin.Logger.LogDebug("Transpiler: Replace FindObjectOfType<RoundManager>() with RoundManager.Instance");
+                    Plugin.Logger.LogDebug($"Transpiler ({__originalMethod.DeclaringType}.{__originalMethod.Name}): Replace FindObjectOfType<RoundManager>() with RoundManager.Instance");
+                }
+                else if (codes[i].opcode == OpCodes.Callvirt && codes[i].operand as MethodInfo == GAME_OBJECT_LAYER && codes[i + 1].opcode == OpCodes.Ldc_I4_8 && codes[i - 7].opcode == OpCodes.Ldfld)
+                {
+                    FieldInfo fieldInfo = (FieldInfo)codes[i - 7].operand;
+                    if (fieldInfo == OBJECTS_HIT_BY_SHOVEL_LIST || fieldInfo == OBJECTS_HIT_BY_KNIFE_LIST)
+                    {
+                        codes.InsertRange(i + 3, [
+                            new(OpCodes.Ldarg_0),
+                            new(OpCodes.Ldfld, codes[i - 7].operand),
+                            new(OpCodes.Ldloc_S, codes[i - 6].operand),
+                            new(OpCodes.Callvirt, codes[i - 5].operand),
+                            new(OpCodes.Stloc_S, codes[i - 4].operand),
+                            new(OpCodes.Ldloca_S, codes[i - 3].operand),
+                            new(OpCodes.Call, codes[i - 2].operand),
+                            new(OpCodes.Callvirt, codes[i - 1].operand),
+                            new(OpCodes.Callvirt, GAME_OBJECT_LAYER),
+                            new(OpCodes.Ldc_I4_S, (sbyte)TERRAIN), // new
+                            new(OpCodes.Beq, codes[i + 2].operand)
+                        ]);
+                        Plugin.Logger.LogDebug($"Transpiler ({__originalMethod.DeclaringType}.{__originalMethod.Name}): Bounce off layer 25 (Terrain)");
+                        i += 11;
+                    }
                 }
             }
 
@@ -85,11 +112,12 @@ namespace MeleeFixes
 
         [HarmonyPatch(typeof(Shovel), nameof(Shovel.ItemActivate))]
         [HarmonyPrefix]
-        static void Shovel_Pre_ItemActivate(Shovel __instance, PlayerControllerB ___previousPlayerHeldBy, ref bool ___reelingUp)
+        static void Shovel_Pre_ItemActivate(Shovel __instance)
         {
-            if (___reelingUp && ___previousPlayerHeldBy != __instance.playerHeldBy)
+            __instance.shovelMask |= 1 << TERRAIN;
+            if (__instance.reelingUp && __instance.previousPlayerHeldBy != __instance.playerHeldBy)
             {
-                ___reelingUp = false;
+                __instance.reelingUp = false;
                 Plugin.Logger.LogInfo("Reset broken shovel to allow swinging it again");
             }
         }
@@ -145,6 +173,13 @@ namespace MeleeFixes
 
             return codes;
         }
+
+        [HarmonyPatch(typeof(KnifeItem), nameof(KnifeItem.EquipItem))]
+        [HarmonyPostfix]
+        static void KnifeItem_Post_ItemActivate(KnifeItem __instance)
+        {
+            __instance.knifeMask |= 1 << TERRAIN;
+        }
     }
 
     static class WeaponHelper
@@ -166,7 +201,8 @@ namespace MeleeFixes
 
                     EnemyAICollisionDetect enemyAICollisionDetect = hittable as EnemyAICollisionDetect;
                     // this prevents the shovel from bouncing off thumper/spider/etc. hurtboxes, since that wouldn't actually deal damage
-                    if (enemyAICollisionDetect != null && enemyAICollisionDetect.onlyCollideWhenGrounded && !enemyAICollisionDetect.alwaysAllowHitting)
+                    // now also prevents weapons from hitting dead enemies (especially important for the knife, which can't hit multiple targets in a single swing)
+                    if (enemyAICollisionDetect != null && ((enemyAICollisionDetect.onlyCollideWhenGrounded && !enemyAICollisionDetect.alwaysAllowHitting) || (enemyAICollisionDetect.mainScript != null && enemyAICollisionDetect.mainScript.isEnemyDead)))
                     {
                         hits.RemoveAt(i--);
                         //Plugin.Logger.LogDebug($"Filtered invalid melee target on \"{hits[i].transform.name}\"");
